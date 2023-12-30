@@ -15,6 +15,7 @@ HGEMM_FUNC(simtNaive);
 
 HGEMM_FUNC(wmmaNaive);
 HGEMM_FUNC(wmmaBase);
+HGEMM_FUNC(wmmaBase2);
 HGEMM_FUNC(wmmaPadding);
 HGEMM_FUNC(wmmaAsync);
 HGEMM_FUNC(wmmaAsyncPg2s);
@@ -98,11 +99,12 @@ int main(int argc, char *argv[]) {
     Tester tester(FLAGS_M, FLAGS_N, FLAGS_K, FLAGS_warmup_iterations, FLAGS_profiling_iterations, FLAGS_sleep_duration,
                   FLAGS_enable_check);
     tester.evaluate(cublasTensorOp, "Cublas-Tensor-Op");
-    // tester.evaluate(simtNaive, "Simt-Naive");
+    tester.evaluate(simtNaive, "Simt-Naive");
 
     if (FLAGS_enable_wmma) {
-        // tester.evaluate(wmmaNaive, "Wmma-Naive");
-        // tester.evaluate(wmmaBase, "Wmma-Base");
+        tester.evaluate(wmmaNaive, "Wmma-Naive");
+        tester.evaluate(wmmaBase, "Wmma-Base");
+        tester.evaluate(wmmaBase2, "Wmma-Base2");
         tester.evaluate(wmmaPadding, "Wmma-Padding");
         tester.evaluate(wmmaAsync, "Wmma-Async");
         tester.evaluate(wmmaAsyncPg2s, "Wmma-Async-Pg2s");
@@ -112,8 +114,8 @@ int main(int argc, char *argv[]) {
     }
 
     if (FLAGS_enable_mma) {
-        // tester.evaluate(mmaNaive, "Mma-Naive");
-        // tester.evaluate(mmaBase, "Mma-Base");
+        tester.evaluate(mmaNaive, "Mma-Naive");
+        tester.evaluate(mmaBase, "Mma-Base");
         tester.evaluate(mmaPermuted, "Mma-Permuted");
         tester.evaluate(mmaAsync, "Mma-Async");
         tester.evaluate(mmaAsyncPg2s, "Mma-Async-Pg2s");

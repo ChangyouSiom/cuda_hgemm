@@ -44,9 +44,8 @@
 
 using namespace nvcuda;
 
-__global__ void wmmaBaseKernel(const half *__restrict__ A, const half *__restrict__ B, half *__restrict__ C, size_t M,
-                               size_t N, size_t K) {
-
+__global__ void wmmaBase2Kernel(const half *__restrict__ A, const half *__restrict__ B, half *__restrict__ C, size_t M,
+                                size_t N, size_t K) {
     const size_t M_tiles = div_ceil(M, WMMA_M);
     const size_t N_tiles = div_ceil(N, WMMA_N);
     const size_t K_tiles = div_ceil(K, WMMA_K);
@@ -71,7 +70,9 @@ __global__ void wmmaBaseKernel(const half *__restrict__ A, const half *__restric
 
     half *smem_warp_stream_ptr = &smem[0][0] + warp_id * WMMA_M * 2 * C_SMEM_STRIDE;
 
-    const size_t gmem_idx = (block_tile_i + warp_id * 2) * WMMA_M * N + block_tile_j * WMMA_N;
+    // const size_t gmem_idx = (block_tile_i + warp_id * 2) * WMMA_M * N + block_tile_j * WMMA_N;
+    const size_t gmem_idx =
+        block_tile_i * WMMA_M * N + block_tile_j * WMMA_N + warp_id / 2 * WARP_ROWS * N + warp_id % 2 * WARP_COLS;
     half *src_gmem_warp_stream_ptr = &C[gmem_idx];
 
     wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, half> C_frag[WARP_COL_TILES][WARP_ROW_TILES];
@@ -121,7 +122,7 @@ __global__ void wmmaBaseKernel(const half *__restrict__ A, const half *__restric
 
         __syncthreads();
         /// ---------------------------
-        
+
         /// 从共享内存加载到tensorcore，并执行计算。
 #pragma unroll
         for (size_t k_step = 0; k_step < CHUNK_K; ++k_step) {
@@ -158,71 +159,45 @@ __global__ void wmmaBaseKernel(const half *__restrict__ A, const half *__restric
         __syncthreads();
         /// ---------------------------
     }
-    
-    /// 从tensorcore拷贝到共享内存 
+
+    /// 从tensorcore拷贝到全局内存
 #pragma unroll
     for (size_t i = 0; i < WARP_COL_TILES; ++i) {
 #pragma unroll
         for (size_t j = 0; j < WARP_ROW_TILES; ++j) {
-            half *C_tile_ptr = smem_warp_tile_ptr + i * C_SMEM_STRIDE * WMMA_M + j * WMMA_N;
-
-            wmma::store_matrix_sync(C_tile_ptr, C_frag[i][j], C_SMEM_STRIDE, wmma::mem_row_major);
+            // half *C_tile_ptr = smem_warp_tile_ptr + i * C_SMEM_STRIDE * WMMA_M + j * WMMA_N;
+            half *C_tile_ptr = src_gmem_warp_stream_ptr + i * WMMA_M * N + j * WMMA_N;
+            wmma::store_matrix_sync(C_tile_ptr, C_frag[i][j], N, wmma::mem_row_major);
         }
-    }
-
-    __syncthreads();
-    /// -------------------------
-    
-    /// 从共享内存拷贝到全局内存
-#pragma unroll
-    for (size_t i = 0; i < WMMA_M; ++i) {
-        *((int4 *)(src_gmem_warp_stream_ptr + (i * 2 + lane_id / 16) * N) + lane_id % 16) =
-            *((int4 *)(smem_warp_stream_ptr + (i * 2 + lane_id / 16) * C_SMEM_STRIDE) + lane_id % 16);
     }
     /// -------------------------
 }
 
-size_t initWmmaBase() {
+size_t initWmmaBase2() {
     int dev_id = 0;
     HGEMM_CHECK_CUDART_ERROR(cudaGetDevice(&dev_id));
 
     cudaDeviceProp dev_prop;
     HGEMM_CHECK_CUDART_ERROR(cudaGetDeviceProperties(&dev_prop, dev_id));
 
-    size_t smem_max_size =
-        std::max((BLOCK_ROWS + BLOCK_COLS) * AB_SMEM_STRIDE * sizeof(half), BLOCK_ROWS * C_SMEM_STRIDE * sizeof(half));
+    size_t smem_max_size = (BLOCK_ROWS + BLOCK_COLS) * AB_SMEM_STRIDE * sizeof(half);
     HLOG("smem_max_size: %.0f KBytes (%zu Bytes)", static_cast<double>(smem_max_size) / 1024, smem_max_size);
 
     HGEMM_CHECK_GT(dev_prop.sharedMemPerMultiprocessor, smem_max_size);
     HGEMM_CHECK_CUDART_ERROR(
-        cudaFuncSetAttribute(wmmaBaseKernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_max_size));
+        cudaFuncSetAttribute(wmmaBase2Kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_max_size));
 
     return smem_max_size;
 }
 
-void wmmaBase(half *A, half *B, half *C, size_t M, size_t N, size_t K) {
-    static size_t smem_max_size = initWmmaBase();
+void wmmaBase2(half *A, half *B, half *C, size_t M, size_t N, size_t K) {
+    static size_t smem_max_size = initWmmaBase2();
 
     dim3 block(THREADS_PER_BLOCK);
     dim3 grid(BLOCK_STRIDE, div_ceil(M, BLOCK_ROWS), div_ceil(N, BLOCK_COLS * BLOCK_STRIDE));
 
-    wmmaBaseKernel<<<grid, block, smem_max_size>>>(A, B, C, M, N, K);
+    wmmaBase2Kernel<<<grid, block, smem_max_size>>>(A, B, C, M, N, K);
 }
 
 
-// 问题1： 希望解决头文件引入的错误，从而手动添加宏定义__CUDA_ARCH__,导致一系列错误。
-// 原因： 这个宏，是用来区分host、device代码的，host端不应该定义，device端应该是nvvc会自动添加此定义
-// Usage of __CUDA_ARCH__ in host code is therefore undefined (at least by CUDA). As pointed out by @tera in the comments, 
-// since the macro is undefined in host code, it could be used to differentiate host/device paths for example, in a __host__ __device__ function definition.
-// #ifndef __CUDA_ARCH__
-// //host code here
-// #else
-// //device code here
-// #endif
-
-
-// 问题2： 计算结果从tensorcore 到 全局内存，为什么要经过共享内存
-// 实验结果差距不大。经过共享内存，可以重新设计访存方式，让wrap内线程的访存更连续
-
-
-
+// 基于base修改， 计算结果从tensorcore 到 全局内存，不经过共享内存
