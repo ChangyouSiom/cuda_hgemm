@@ -33,6 +33,7 @@ __global__ void mmaNaiveKernel(const half *__restrict__ A, const half *__restric
 
 #pragma unroll
     for (size_t i = 0; i < K_tiles; ++i) {
+        // 从全局加载到共享内存
         *((int4 *)(&A_smem[lane_id / 2][0]) + lane_id % 2) =
             *((int4 *)(&A[(warp_row + lane_id / 2) * K + i * MMA_K]) + lane_id % 2);
 
@@ -42,26 +43,31 @@ __global__ void mmaNaiveKernel(const half *__restrict__ A, const half *__restric
         }
 
         __syncthreads();
-
+        
+        // 从共享内存加载到寄存器
         uint32_t RA[4];
         uint32_t RB[2];
 
         uint32_t A_smem_lane_addr = __cvta_generic_to_shared(&A_smem[lane_id % 16][(lane_id / 16) * 8]);
         LDMATRIX_X4(RA[0], RA[1], RA[2], RA[3], A_smem_lane_addr);
-
+        
+        // LDMATRIX_X2。lanid_id > 16 后的地址其实没产生实际作用。
         uint32_t B_smem_lane_addr = __cvta_generic_to_shared(&B_smem[lane_id % 8][((lane_id / 8) % 2) * 8]);
         LDMATRIX_X2(RB[0], RB[1], B_smem_lane_addr);
-
+        
+        // tensor core mma 计算
         HMMA16816(RC[0], RC[1], RA[0], RA[1], RA[2], RA[3], RB[0], RB[1], RC[0], RC[1]);
 
         __syncthreads();
     }
-
+    
+    // 从寄存器加载到共享内存
     *((uint32_t *)(&C_smem[lane_id / 4][0]) + lane_id % 4) = RC[0];
     *((uint32_t *)(&C_smem[lane_id / 4 + 8][0]) + lane_id % 4) = RC[1];
 
     __syncthreads();
 
+    // 从共享加载到全局
     if (lane_id < MMA_M) {
         *((int4 *)(&C[(warp_row + lane_id) * N + warp_col])) = *((int4 *)(&C_smem[lane_id][0]));
     }
