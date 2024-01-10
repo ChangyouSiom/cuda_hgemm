@@ -25,6 +25,7 @@ HGEMM_FUNC(wmmaAsyncStage3);
 
 HGEMM_FUNC(mmaNaive);
 HGEMM_FUNC(mmaBase);
+HGEMM_FUNC(mmaBaseTest);
 HGEMM_FUNC(mmaPermuted);
 HGEMM_FUNC(mmaAsync);
 HGEMM_FUNC(mmaAsyncPg2s);
@@ -116,6 +117,7 @@ int main(int argc, char *argv[]) {
     if (FLAGS_enable_mma) {
         tester.evaluate(mmaNaive, "Mma-Naive");
         tester.evaluate(mmaBase, "Mma-Base");
+        tester.evaluate(mmaBaseTest, "Mma-Base-Test");
         tester.evaluate(mmaPermuted, "Mma-Permuted");
         tester.evaluate(mmaAsync, "Mma-Async");
         tester.evaluate(mmaAsyncPg2s, "Mma-Async-Pg2s");
