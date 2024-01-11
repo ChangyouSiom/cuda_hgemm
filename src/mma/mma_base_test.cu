@@ -34,16 +34,19 @@ __global__ void mmaBaseKernelTest(half *A, half *B, half *C, size_t M, size_t N,
     uint32_t RC[WARP_TILES_M][WARP_TILES_N][2] = {0};
 
     int k_tiles = K / WARP_K;
+#pragma unroll
     for (int k_tile = 0; k_tile < k_tiles; k_tile += CHUNK) {
-        // A : global to share
+// A : global to share
+#pragma unroll
         for (int i = 0; i < BLOCK_ROWS / BLOCK_WARPS / 8; ++i) {
             int shared_row = warp_id * BLOCK_ROWS / BLOCK_WARPS + lane_id / 4 + i * 8;
             int shared_col = lane_id % 4 * 8;
             int block_row = block_tile_i * BLOCK_ROWS + shared_row;
-            int block_col = k_tile  * WARP_K + shared_col;
+            int block_col = k_tile * WARP_K + shared_col;
             *((int4 *)(smem[shared_row] + shared_col)) = *((int4 *)(A + K * block_row + block_col));
         }
-        // B : global to share
+// B : global to share
+#pragma unroll
         for (int i = 0; i < BLOCK_COLS / BLOCK_WARPS / 8; ++i) {
             int shared_row = warp_id * BLOCK_COLS / BLOCK_WARPS + lane_id / 4 + i * 8;
             int shared_col = lane_id % 4 * 8;
@@ -52,30 +55,45 @@ __global__ void mmaBaseKernelTest(half *A, half *B, half *C, size_t M, size_t N,
             *((int4 *)(smem[BLOCK_ROWS + shared_row] + shared_col)) = *((int4 *)(B + K * block_col + block_row));
         }
         __syncthreads();
+#pragma unroll
         for (int k = 0; k < CHUNK; ++k) {
+            uint32_t RA[WARP_TILES_M][4];
+            uint32_t RB[WARP_TILES_N][2];
+#pragma unroll
             for (int warp_tile_m = 0; warp_tile_m < WARP_TILES_M; warp_tile_m++) {
+                int a_row = warp_id / 2 * (WARP_M * WARP_TILES_M) + warp_tile_m * WARP_M;
+                int a_col = k * WARP_K;
+                uint32_t a_smem_lane_addr =
+                    __cvta_generic_to_shared(&smem[a_row + lane_id % 16][a_col + (lane_id / 16) * 8]);
+                LDMATRIX_X4(RA[warp_tile_m][0], RA[warp_tile_m][1], RA[warp_tile_m][2], RA[warp_tile_m][3],
+                            a_smem_lane_addr);
+            }
+
+#pragma unroll
+            for (int warp_tile_n = 0; warp_tile_n < WARP_TILES_N; warp_tile_n++) {
+                int b_row = k * WARP_K;
+                int b_col = warp_id % 2 * (WARP_N * WARP_TILES_N) + warp_tile_n * WARP_N;
+                uint32_t b_smem_lane_addr =
+                    __cvta_generic_to_shared(&smem[BLOCK_ROWS + b_col + lane_id % 8][b_row + ((lane_id / 8) % 2) * 8]);
+                LDMATRIX_X2(RB[warp_tile_n][0], RB[warp_tile_n][1], b_smem_lane_addr);
+            }
+
+#pragma unroll
+            for (int warp_tile_m = 0; warp_tile_m < WARP_TILES_M; warp_tile_m++) {
+#pragma unroll
                 for (int warp_tile_n = 0; warp_tile_n < WARP_TILES_N; warp_tile_n++) {
-                    uint32_t RA[4];
-                    uint32_t RB[2];
-                    int a_row = warp_id / 2 * (WARP_M * WARP_TILES_M) + warp_tile_m * WARP_M;
-                    int a_col = k * WARP_K;
-                    int b_row = k * WARP_K;
-                    int b_col = warp_id % 2 * (WARP_N * WARP_TILES_N) + warp_tile_n * WARP_N;
-                    uint32_t a_smem_lane_addr =
-                        __cvta_generic_to_shared(&smem[a_row + lane_id % 16][a_col + (lane_id / 16) * 8]);
-                    LDMATRIX_X4(RA[0], RA[1], RA[2], RA[3], a_smem_lane_addr);
-                    uint32_t b_smem_lane_addr = __cvta_generic_to_shared(
-                        &smem[BLOCK_ROWS + b_col + lane_id % 8][b_row + ((lane_id / 8) % 2) * 8]);
-                    LDMATRIX_X2(RB[0], RB[1], b_smem_lane_addr);
-                    HMMA16816(RC[warp_tile_m][warp_tile_n][0], RC[warp_tile_m][warp_tile_n][1], RA[0], RA[1], RA[2],
-                              RA[3], RB[0], RB[1], RC[warp_tile_m][warp_tile_n][0], RC[warp_tile_m][warp_tile_n][1]);
+                    HMMA16816(RC[warp_tile_m][warp_tile_n][0], RC[warp_tile_m][warp_tile_n][1], RA[warp_tile_m][0],
+                              RA[warp_tile_m][1], RA[warp_tile_m][2], RA[warp_tile_m][3], RB[warp_tile_n][0], RB[warp_tile_n][1],
+                              RC[warp_tile_m][warp_tile_n][0], RC[warp_tile_m][warp_tile_n][1]);
                     __syncthreads();
                 }
             }
         }
     }
-    // register to shared
+// register to shared
+#pragma unroll
     for (int warp_tile_m = 0; warp_tile_m < WARP_TILES_M; warp_tile_m++) {
+#pragma unroll
         for (int warp_tile_n = 0; warp_tile_n < WARP_TILES_N; warp_tile_n++) {
             int c_row = warp_id / 2 * (WARP_M * WARP_TILES_M) + warp_tile_m * WARP_M;
             int c_col = warp_id % 2 * (WARP_N * WARP_TILES_N) + warp_tile_n * WARP_N;
@@ -86,7 +104,8 @@ __global__ void mmaBaseKernelTest(half *A, half *B, half *C, size_t M, size_t N,
         }
     }
     __syncthreads();
-    // C shared to global
+// C shared to global
+#pragma unroll
     for (int i = 0; i < BLOCK_ROWS / BLOCK_WARPS / 2; ++i) {
         int shared_row = warp_id * BLOCK_ROWS / BLOCK_WARPS + lane_id / 16 + i * 2;
         int shared_col = lane_id % 16 * 8;
