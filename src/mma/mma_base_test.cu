@@ -83,10 +83,10 @@ __global__ void mmaBaseKernelTest(half *A, half *B, half *C, size_t M, size_t N,
                     HMMA16816(RC[i][j_s][0], RC[i][j_s][1], RA[i][0],
                               RA[i][1], RA[i][2], RA[i][3], RB[j_s][0], RB[j_s][1],
                               RC[i][j_s][0], RC[i][j_s][1]);
-                    __syncthreads();
                 }
             }
         }
+        __syncthreads();
     }
 // register to shared
 #pragma unroll
