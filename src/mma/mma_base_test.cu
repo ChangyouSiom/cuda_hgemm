@@ -86,7 +86,7 @@ __global__ void mmaBaseKernelTest(half *A, half *B, half *C, size_t M, size_t N,
                 }
             }
         }
-        __syncthreads();
+        // __syncthreads();  取消这个块内同步同步看起来没有问题。这个同步，本质上是warp之间发生了协作。而这里并没有协作，所以可以取消。
     }
 // register to shared
 #pragma unroll
